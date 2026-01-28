@@ -62,7 +62,7 @@ config = RSSDAConfig(
     iter_limit=2000,            # Max policy nodes per stage
     rec_limit=1,                # Recursion depth
     heuristic_type="HYBRID",    # "QMDP", "HYBRID", or "POMDP"
-    TI1=True,                   # [approximation] Interleaved expansion
+    TI1=True,                   # [approximation] Interleaved planning and search
     TI2=True,                   # [approximation] Pruning
     TI3=True,                   # [approximation] Tail heuristics
     TI4=True,                   # [approximation] Lossy clustering via sliding windows
@@ -86,7 +86,8 @@ RSSDA/
 │   ├── sdec_labyrinth.py
 │   ├── maritimemedevac.py
 │   └── *.data               # Domain specification files
-└── labyrinth_benchmarks/    # Labyrinth domain data files
+├── labyrinth_benchmarks/    # Labyrinth domain data files
+└── DARPA_SubT_sites_graphics/    # DARPA subterannean challenge graphs
 ```
 
 ## Citation
