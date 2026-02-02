@@ -23,7 +23,7 @@ Optional Approximation Techniques (TI1-TI4):
     - TI1: Early termination via weighted majority voting on centralization decisions; effective for stochastic observations and in centralized settings
     - TI2: Progress-based pruning to limit search depth per policy
     - TI3: Recursive horizon limiting with tail approximation [QMDP/HYBRID/POMDP]
-    - TI4: Finite-memory clustering (window-based observation histories); effective for stochastic observations/complex belief dynamics
+    - TI4: Max clustering; effective for large/continous/stochastic observations/complex belief dynamics
 
 Author: [Mahdi Al-Husseini]
 License: MIT  (https://opensource.org/license/mit/)
@@ -267,7 +267,7 @@ class RSSDAConfig:
     hybrid_r: int = 0
     
     # TI4 Settings (Clustering)
-    memory: int = 2
+    max_clusters: int = 20
 
     # Resource Limits
     memory_limit_gb: Optional[float] = 16.0  # Memory limit in GB; None = no limit
@@ -279,8 +279,6 @@ class RSSDAConfig:
     def __post_init__(self):
         if self.tail_heuristic_type is None:
             self.tail_heuristic_type = self.heuristic_type
-        if self.memory is not None and self.memory < 1:
-            raise ValueError(f"TI4 memory must be >= 1, got {self.memory}")
 
 @dataclass
 class TriggerProfile:
@@ -358,11 +356,16 @@ class SDecPOMDPModel:
         
         self.RA = cached_data['R_np'].astype(np.float64)
 
-    def _load_from_raw(self, transitions: List, obs: Union[List, Dict], rewards: List) -> None:
+    def _load_from_raw(self, transitions: Union[List, Dict], obs: Union[List, Dict], rewards: List) -> None:
+        # Handle sparse transitions dict (fallback for non-cached loading)
+        if isinstance(transitions, dict):
+            trans_size = self.nactions * self.nstates * self.nstates
+            transitions = [transitions.get(i, 0.0) for i in range(trans_size)]
+
         # Normalize obs to sparse dict format
         if not isinstance(obs, dict):
             obs = {i: v for i, v in enumerate(obs) if v > 0}
-        
+
         # Build dense arrays (standard initialization)
         self.T = np.array(transitions, dtype=np.float64).reshape(self.nactions, self.nstates, self.nstates)
         
@@ -416,7 +419,7 @@ class SDecPOMDP:
         self.rec_limit = config.rec_limit
         self.cen_threshold = config.cen_threshold
         self.sm_temperature = config.sm_temperature
-        self.memory = config.memory
+        self.max_clusters = config.max_clusters
         self.adaptive_check = config.adaptive_check
         self.hybrid_r = config.hybrid_r
         self.heuristic_type = config.heuristic_type
@@ -787,56 +790,52 @@ class SDecPOMDP:
         self.terminalMDP_dict[cache_key] = best
         return best
 
-    # ---------- TI2 (Fixed: Scoped Budgeting) ----------
-    def check_progress_pruning(self, pi_c: Policy, idx: int, ctr: int, aidx: int, cidx: bool, policyidx: int) -> bool:
+    # ---------- TI2 ----------
+    def check_progress_pruning(self, pi_c, idx, ctr, aidx, cidx, policyidx):
         """
-        Calculates the semi-decentralized progress score (prog) and prunes if the
+        Calculates the semi-decentralized progress score (prog) and prunes if the 
         global counter (ctr) exceeds the allowed progress for this policy depth.
-
-        MODIFIED FORMULA:
-            prog = σ * L + k * B + max(c/|C|, p) * B
-
-        The entity progress term is now normalized:
-            effective_fraction = max(c / |C|, p)
-            entity_progress = effective_fraction * B
-
-        This ensures:
-        - Entity progress is always in [0, B] regardless of cluster count
-        - Higher probability p always helps (never penalizes)
-        - Progress scales correctly when |C| > B
-
-        Symbol definitions:
-        - σ (sigma): Completed stages
-        - L: iter_limit (total budget)
+        
+        Formula: 
+        prog = sigma * L + k * (L/(n+1)) + c + p * (L/(n+1) - |C|)
+        
+        Where:
+        - sigma: Completed stages
         - k: Completed entities in current stage (Centralized=0, Agent0=1, ...)
-        - B: Per-entity budget = L / (n + 1)
         - c: Completed clusters for current entity
-        - |C|: Total clusters for current entity
         - p: Cumulative probability of completed clusters
-
-        NOTE: iter_limit should be set such that B = L/(n+1) >= max expected
-        clusters per entity. If total_clusters > B, some clusters may not be fully
-        explored before pruning occurs (a warning will be logged).
+        - |C|: Total clusters for current entity
         """
-
+        
+        # 1. Constants and Context
         current_stage = idx - 1
         L = self.iter_limit
         n = self.nagents
         n_entities = n + 1  # n Agents + 1 Centralized Component
-        B = L / n_entities  # Per-entity budget
-
+        
+        # 2. Base Progress (Fully Completed Stages)
+        # sigma * L
         progress = current_stage * L
-
+        
+        # 3. Entity Progress (Completed Entities in Current Stage)
+        # Expansion Order: Centralized -> Agent 0 -> ... -> Agent n-1
         if cidx:
+            # We are currently expanding the Centralized Component.
+            # No entities are fully completed in this stage yet.
             k = 0
         else:
+            # Centralized is done. Agents 0 to (aidx-1) are done.
+            # k = 1 (for Centralized) + aidx (for previous agents)
             k = 1 + aidx
-
-        progress += k * B
+            
+        progress += k * (L / n_entities)
+        
+        # 4. Cluster Progress (c) and Probability Mass (p)
+        # c = policyidx (number of clusters already fixed)
         c = policyidx
         p = 0.0
         total_clusters = 0
-
+        
         if cidx:
             # --- Centralized Component Logic ---
             if current_stage < len(pi_c.dists_cen):
@@ -851,40 +850,33 @@ class SDecPOMDP:
             # --- Decentralized Agent Logic ---
             if current_stage < len(pi_c.ncluster):
                 total_clusters = pi_c.ncluster[current_stage][aidx]
+                
+                # Calculate p: Sum of joint probabilities consistent with 
+                # agent 'aidx' being in local clusters 0 to c-1.
                 if current_stage < len(pi_c.prob) and c > 0:
                     divs, _ = cumprod(pi_c.ncluster[current_stage])
+                    
+                    # lists_product2 generates all joint indices where agent 'aidx'
+                    # has a local cluster index in the provided list (range(c)).
                     relevant_joint_indices = lists_product2(
-                        aidx,
-                        range(c),
-                        pi_c.ncluster[current_stage],
-                        divs,
+                        aidx, 
+                        range(c), 
+                        pi_c.ncluster[current_stage], 
+                        divs, 
                         self.nagents
                     )
-
+                    
                     for joint_idx in relevant_joint_indices:
                         if joint_idx < len(pi_c.prob[current_stage]):
                             p += pi_c.prob[current_stage][joint_idx]
+        # else: aidx == n (stage complete, waiting for expansion) - no cluster lookup needed
 
-        # 5. Compute Entity Progress (Normalized)
-        if total_clusters > 0:
-            if total_clusters > B and c == 0:
-                entity_type = "centralized" if cidx else f"agent {aidx}"
-                print(f"[TI2 WARNING] Stage {current_stage} {entity_type} has {total_clusters} clusters "
-                      f"but per-entity budget is {B:.0f}. Consider increasing iter_limit.")
-
-            # Normalize progress: use max of cluster fraction and probability fraction
-            cluster_fraction = c / total_clusters
-            effective_fraction = max(cluster_fraction, p)
-            entity_progress = effective_fraction * B
-        else:
-            # No clusters for this entity
-            entity_progress = 0
-
-        progress += entity_progress
+        term_weight = (L / n_entities) - total_clusters
+        progress += c + (p * term_weight)
 
         if ctr > progress:
             return True
-
+            
         return False
     
     # ---------- TI1 ----------
@@ -1330,6 +1322,209 @@ class SDecPOMDP:
         out = (c_id, d_id, prob_dec)
         self.belief_split_cache[dist_id] = out
         return out
+
+    def _ensure_sparse(self, dist_id: BeliefID) -> List[Tuple[int, float]]:
+        """Lazy loader for sparse belief representation to speed up L1 distances."""
+        if dist_id in self.dists_sparse:
+            return self.dists_sparse[dist_id]
+        
+        # Create sparse representation from dense (simple epsilon cut)
+        dense = self.dists[dist_id]
+        sparse = [(i, dense[i]) for i in range(len(dense)) if dense[i] > EPSILON]
+        self.dists_sparse[dist_id] = sparse
+        return sparse
+
+    def _dist_l1(self, id1: BeliefID, id2: BeliefID) -> float:
+        """
+        Computes L1 distance between two beliefs. 
+        Auto-switches between dense (for small states) and sparse (for large states).
+        """
+        if id1 == id2: return 0.0
+            
+        # Optimization: For small state spaces, numpy is faster than Python loops
+        if self.nstates < 500:
+            return np.sum(np.abs(self.dists[id1] - self.dists[id2]))
+
+        # For large state spaces, use sparse lists
+        s1 = self._ensure_sparse(id1)
+        s2 = self._ensure_sparse(id2)
+        
+        # Merge-sort style sparse L1 calculation
+        i, j = 0, 0
+        diff = 0.0
+        len1, len2 = len(s1), len(s2)
+        
+        while i < len1 and j < len2:
+            idx1, val1 = s1[i]
+            idx2, val2 = s2[j]
+            
+            if idx1 == idx2:
+                diff += abs(val1 - val2)
+                i += 1; j += 1
+            elif idx1 < idx2:
+                diff += val1
+                i += 1
+            else:
+                diff += val2
+                j += 1
+                
+        # Add remaining tails
+        while i < len1: diff += s1[i][1]; i += 1
+        while j < len2: diff += s2[j][1]; j += 1
+            
+        return diff
+
+    def narrow_clustering(self, pi_new: Policy, nOhs_dec: int, nOhs_cen: int, div_dec: List[int], aidx: int, dists_terminal: List[BeliefID], probs_terminal: List[Prob], nOhs_dec_parent: int) -> Tuple[int, List[List[int]], List[List[int]]]:
+        """
+        Agglomerative clustering of observation histories based on Probability-Weighted L1 Belief Distance.
+        Selects 'Anchors' that are both probable AND distinct, then maps remaining beliefs to nearest anchor.
+        """
+        K_MAX = getattr(self.config, 'max_clusters', 20) 
+        
+        # 1. Identify Unique Reachable Beliefs & Weights
+        # Map: dist_id -> total_probability_mass
+        candidates = {}   
+        
+        # Transition Map: (source_type, parent_idx, obs) -> dist_id
+        # source_type: 0 for dec, 1 for cen
+        transition_map = {}
+
+        nobs_a = self.nobs_factor[aidx]
+        
+        # --- Scan Decentralized Parents ---
+        if nOhs_dec > 0:
+            os_by_oa = self._os_by_oa_cache.get(aidx)
+            if os_by_oa is None:
+                os_by_oa = [lists_product2(aidx, [oa], self.nobs_factor, self.o_prod, self.nagents) for oa in range(nobs_a)]
+                self._os_by_oa_cache[aidx] = os_by_oa
+
+            for oha in range(pi_new.ncluster[-1][aidx]):
+                ohs_dec = lists_product2(aidx, [oha], pi_new.ncluster[-1], div_dec, self.nagents)
+                for oa in range(nobs_a):
+                    best_dist = -1
+                    max_p = -1.0
+                    total_p = 0.0
+
+                    # Find dominant belief for this transition
+                    for oh in ohs_dec:
+                        base = oh * self.nobs
+                        for o in os_by_oa[oa]:
+                            idx = base + o
+                            if idx < len(probs_terminal):
+                                p = probs_terminal[idx]
+                                d = dists_terminal[idx]
+                                if p > EPSILON and d != -1:
+                                    total_p += p
+                                    if p > max_p: max_p = p; best_dist = d
+                    
+                    if best_dist != -1:
+                        candidates[best_dist] = candidates.get(best_dist, 0.0) + total_p
+                        transition_map[(0, oha, oa)] = best_dist
+
+        # --- Scan Centralized Parents ---
+        cen_offset = nOhs_dec_parent * self.nobs
+        if nOhs_cen > 0:
+            if aidx not in self._os_by_oa_cache:
+                self._os_by_oa_cache[aidx] = [lists_product2(aidx, [oa], self.nobs_factor, self.o_prod, self.nagents) for oa in range(nobs_a)]
+            os_by_oa = self._os_by_oa_cache[aidx]
+
+            for j in range(nOhs_cen):
+                parent_base = cen_offset + j * self.nobs
+                for oa in range(nobs_a):
+                    best_dist = -1
+                    max_p = -1.0
+                    total_p = 0.0
+
+                    for o in os_by_oa[oa]:
+                        idx = parent_base + o
+                        if idx < len(probs_terminal):
+                            p = probs_terminal[idx]
+                            d = dists_terminal[idx]
+                            if p > EPSILON and d != -1:
+                                total_p += p
+                                if p > max_p: max_p = p; best_dist = d
+                    
+                    if best_dist != -1:
+                        candidates[best_dist] = candidates.get(best_dist, 0.0) + total_p
+                        transition_map[(1, j, oa)] = best_dist
+
+        # 2. Smart Anchor Selection (Weighted Greedy Strategy)
+        unique_dists = list(candidates.keys())
+        
+        if len(unique_dists) <= K_MAX:
+            mapping = {d: i for i, d in enumerate(unique_dists)}
+            cluster_count = len(unique_dists)
+        else:
+            # A. Pick first anchor: Most probable belief (The "Normal" case)
+            first_anchor = max(unique_dists, key=lambda d: candidates[d])
+            anchors = [first_anchor]
+            
+            # Cache distances to nearest anchor
+            min_dists = {}
+            for d in unique_dists:
+                min_dists[d] = 0.0 if d == first_anchor else self._dist_l1(d, first_anchor)
+
+            # B. Iteratively pick next anchors based on Score = Prob * Distance
+            while len(anchors) < K_MAX:
+                best_candidate = -1
+                best_score = -1.0
+                
+                for d in unique_dists:
+                    if min_dists[d] > EPSILON: 
+                        # This balances "ignoring rare things" vs "ignoring distinct things"
+                        score = candidates[d] * min_dists[d]
+                        if score > best_score:
+                            best_score = score
+                            best_candidate = d
+                
+                if best_candidate == -1: break 
+                
+                anchors.append(best_candidate)
+                
+                # Update minimum distances for remaining candidates
+                for d in unique_dists:
+                    if min_dists[d] > EPSILON:
+                        dist_to_new = self._dist_l1(d, best_candidate)
+                        if dist_to_new < min_dists[d]:
+                            min_dists[d] = dist_to_new
+
+            # 3. Final Mapping: Assign everyone to nearest anchor
+            mapping = {}
+            anchor_to_idx = {a: i for i, a in enumerate(anchors)}
+            
+            for d in unique_dists:
+                if d in anchor_to_idx:
+                    mapping[d] = anchor_to_idx[d]
+                else:
+                    # Find nearest anchor
+                    best_anchor = -1
+                    min_dist = math.inf
+                    for a in anchors:
+                        dist = self._dist_l1(d, a)
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_anchor = a
+                    mapping[d] = anchor_to_idx[best_anchor]
+            
+            cluster_count = len(anchors)
+
+        # 4. Construct Output Tables
+        clustering_newa_dec = [[-1]*nobs_a for _ in range(pi_new.ncluster[-1][aidx])]
+        clustering_newa_cen = [[-1]*nobs_a for _ in range(nOhs_cen)]
+        
+        for oha in range(pi_new.ncluster[-1][aidx]):
+            for oa in range(nobs_a):
+                key = (0, oha, oa)
+                if key in transition_map:
+                    clustering_newa_dec[oha][oa] = mapping[transition_map[key]]
+                    
+        for j in range(nOhs_cen):
+            for oa in range(nobs_a):
+                key = (1, j, oa)
+                if key in transition_map:
+                    clustering_newa_cen[j][oa] = mapping[transition_map[key]]
+
+        return cluster_count, clustering_newa_dec, clustering_newa_cen
 
     def compute_clusterctr(self, cdict_i: Tuple) -> int:  # Compute_clusterctr: computes a number from which the clustering structure
         ci = 0                                            # Can be recovered, by converting the tuple into a number.
@@ -1870,7 +2065,7 @@ class SDecPOMDP:
 
         for a in range(self.nagents):
             if self.algorithm == "approximate" and self.TI4:
-                c_new_a, cl_new_dec_a, cl_new_cen_a = self.window_clustering(pi_new, nOhs_dec_potential, nOhs_cen_parent, div_dec, a, dists_terminal, probs_terminal, nOhs_dec_parent)
+                c_new_a, cl_new_dec_a, cl_new_cen_a = self.narrow_clustering(pi_new, nOhs_dec_potential, nOhs_cen_parent, div_dec, a, dists_terminal, probs_terminal, nOhs_dec_parent)
             else:
                 c_new_a, cl_new_dec_a, cl_new_cen_a = self.lossless_clustering(pi_new, nOhs_dec_potential, nOhs_cen_parent, div_dec, a, dists_terminal, probs_terminal, nOhs_dec_parent)
             cluster_new.append(c_new_a)

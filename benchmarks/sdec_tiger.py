@@ -86,7 +86,7 @@ TRIGGER_MODE = "semi"     # "centralized", "semi", "decentralized", or "decentra
                                          # decentralized_RSMAA uses original decPOMDP.py (RS-MAA* algorithm)
 
 # --- Core Algorithm ---
-ALGORITHM = "exact"             # "exact" or "approximate" (enables TI approximations)
+ALGORITHM = "approximate"             # "exact" or "approximate" (enables TI approximations)
 
 # --- Heuristic Type ---
 # Controls upper-bound heuristic for A* search guidance.
@@ -107,9 +107,9 @@ IE_MIN2 = 3                     # Min depth of information-sharing stages for de
 # --- Approximation Techniques (TI Flags) ---
 # Enable these for faster but approximate solutions. Requires ALGORITHM = "approximate".
 TI1 = False  # Interleaving Planning/Execution: prune branches via consensus voting
-TI2 = False  # Progress-based Pruning: limit per-entity exploration budget
-TI3 = False  # Tail Approximation: use heuristics for final REC_LIMIT stages
-TI4 = False  # Memory-Bounded Clustering: merge clusters with same recent observations
+TI2 = True  # Progress-based Pruning: limit per-entity exploration budget
+TI3 = True  # Tail Approximation: use heuristics for final REC_LIMIT stages
+TI4 = True  # Max Clustering: cluster based on L1 distance between beliefs, weighted by probability mass
 
 # --- TI1: Interleaving Parameters ---
 # Consensus voting among top nodes to detect centralized stages early.
@@ -125,11 +125,11 @@ ITER_LIMIT = 1000
 # --- TI3: Tail Approximation ---
 # When remaining horizon <= REC_LIMIT, use heuristic value instead of exact expansion.
 REC_LIMIT = 2
-TAIL_HEURISTIC_TYPE = "QMDP"    # Heuristic for tail (defaults to HEURISTIC_TYPE if None)
+TAIL_HEURISTIC_TYPE = "POMDP"    # Heuristic for tail (defaults to HEURISTIC_TYPE if None)
 
-# --- TI4: Finite Memory Clustering ---
-# Clusters with identical last MEMORY observations are merged.
-MEMORY = 2
+# --- TI4: Max Clustering ---
+# Cluster into MAX_Clusters based on combination of L1 distance between resulting beliefs and probability mass
+MAX_CLUSTERS = 10
 
 # ============================================================================
 #                        END USER CONFIGURATION
@@ -328,7 +328,7 @@ def run_interleaved_execution(config):
         iter_limit=ITER_LIMIT,
         rec_limit=REC_LIMIT,
         hybrid_r=HYBRID_R,
-        memory=MEMORY
+        max_clusters=MAX_CLUSTERS
     )
 
     # 4. Initialize Solver

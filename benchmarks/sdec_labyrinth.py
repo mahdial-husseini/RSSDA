@@ -47,7 +47,7 @@ Experiment Reproducibility (Configuration Support):
         heuristic_type="HYBRID",      # heuristic choice {QMDP, HYBRID}, QMDP for speed, HBRID for accuracy
         tail_heuristic_type="HYBRID", # heuristic choice {QMDP, HYBRID}, QMDP for speed, HBRID for accuracy
         hybrid_r=1,                   # r but hybrid component (more general than QMDP) {1, 2}, but recommend 2 for accuracy, 1 for speed
-        memory=2,                     # k in paper for sliding window, modify as desired
+        max_clusters=2,               # k in paper for sliding window, modify as desired
 
 Examples (ensure configuration modified as desired, per the above):  
     - "python sdec_labyrinth_approx.py chamber_3d_015 9": runs chamber_3d_015 benchmark for horizon 9, one time
@@ -73,6 +73,7 @@ from array import array
 # Add parent directories to path for imports
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _root_dir = os.path.dirname(_script_dir)  # Parent of benchmarks/
+sys.path.insert(0, _script_dir)  # For labyrinth_cache.py
 sys.path.insert(0, _root_dir)  # For RSSDA.py
 sys.path.insert(0, os.path.join(_root_dir, 'baselines'))  # For decPOMDP.py
 
@@ -137,7 +138,7 @@ ALGORITHM = "approximate"       # "exact" or "approximate" (enables TI approxima
 #   "HYBRID" - Runs exact POMDP for first HYBRID_R steps, then QMDP
 # Rule of thumb: Use "POMDP" for exact algorithm, "QMDP" or "HYBRID" for approximate.
 HEURISTIC_TYPE = "HYBRID"
-HYBRID_R = 1                    # Steps of exact POMDP before switching to QMDP (HYBRID mode only)
+HYBRID_R = 1                   # Steps of exact POMDP before switching to QMDP (HYBRID mode only)
 
 # --- Decentralized Heuristic Search ---
 # When computing decentralized component heuristics, we run a bounded A* search.
@@ -151,7 +152,7 @@ IE_MIN2 = 3                     # Min depth of information-sharing stages for de
 TI1 = False  # Interleaving Planning/Execution: prune branches via consensus voting
 TI2 = True   # Progress-based Pruning: limit per-entity exploration budget
 TI3 = True   # Tail Approximation: use heuristics for final REC_LIMIT stages
-TI4 = False  # Memory-Bounded Clustering: merge clusters with same recent observations
+TI4 = True  # Max Clustering: cluster based on L1 distance between beliefs, weighted by probability mass
 
 # --- TI1: Interleaving Parameters ---
 # Consensus voting among top nodes to detect centralized stages early.
@@ -170,9 +171,9 @@ ITER_LIMIT = 1000
 REC_LIMIT = 2
 TAIL_HEURISTIC_TYPE = "HYBRID"
 
-# --- TI4: Finite Memory Clustering ---
-# Clusters with identical last MEMORY observations are merged.
-MEMORY = 2
+# --- TI4: Max Clustering ---
+# Cluster into MAX_Clusters based on combination of L1 distance between resulting beliefs and probability mass
+MAX_CLUSTERS = 2
 
 # ============================================================================
 #                        END USER CONFIGURATION
@@ -1349,7 +1350,7 @@ def run_labyrinth(config, verbose=True, fixed_target_idx=None, visualize_policy=
         heuristic_type=HEURISTIC_TYPE,
         tail_heuristic_type=TAIL_HEURISTIC_TYPE,
         hybrid_r=HYBRID_R,
-        memory=MEMORY,
+        max_clusters=MAX_CLUSTERS,
         adaptive_check=ADAPTIVE_CHECK,
         output=verbose
     )
@@ -1363,7 +1364,7 @@ def run_labyrinth(config, verbose=True, fixed_target_idx=None, visualize_policy=
 
     print(f"Configuration: algorithm={sdec_pomdp.algorithm}, TI1={sdec_pomdp.TI1}, TI2={sdec_pomdp.TI2}, TI3={sdec_pomdp.TI3}, TI4={sdec_pomdp.TI4}, "
           f"iter_limit={sdec_pomdp.iter_limit}, rec_limit={sdec_pomdp.rec_limit}, heuristic_type={sdec_pomdp.heuristic_type}, "
-          f"tail_heuristic_type={sdec_pomdp.tail_heuristic_type}, maxit={sdec_pomdp.maxit}, memory={sdec_pomdp.memory}, "
+          f"tail_heuristic_type={sdec_pomdp.tail_heuristic_type}, maxit={sdec_pomdp.maxit}, max_clusters={sdec_pomdp.max_clusters}, "
           f"ie_min2={sdec_pomdp.IEmin2}, hybrid_r={sdec_pomdp.hybrid_r}")
     print(f"Position action masks enabled: {sdec_pomdp.use_position_action_masks}")
 

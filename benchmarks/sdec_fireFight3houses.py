@@ -105,7 +105,7 @@ IE_MIN2 = 3                     # Min depth of information-sharing stages for de
 TI1 = False  # Interleaving Planning/Execution: prune branches via consensus voting
 TI2 = False  # Progress-based Pruning: limit per-entity exploration budget
 TI3 = False  # Tail Approximation: use heuristics for final REC_LIMIT stages
-TI4 = False  # Memory-Bounded Clustering: merge clusters with same recent observations
+TI4 = False  # Max Clustering: cluster based on L1 distance between beliefs, weighted by probability mass
 
 # --- TI1: Interleaving Parameters ---
 # Consensus voting among top nodes to detect centralized stages early.
@@ -122,9 +122,9 @@ ITER_LIMIT = 1000
 # When remaining horizon <= REC_LIMIT, use heuristic value instead of exact expansion.
 REC_LIMIT = 2
 
-# --- TI4: Finite Memory Clustering ---
-# Clusters with identical last MEMORY observations are merged.
-MEMORY = 2
+# --- TI4: Max Clustering ---
+# Cluster into MAX_Clusters based on combination of L1 distance between resulting beliefs and probability mass
+MAX_CLUSTERS = 2
 
 # ============================================================================
 #                        END USER CONFIGURATION
@@ -399,7 +399,7 @@ def run_firefight_rssda(config):
         iter_limit=ITER_LIMIT,
         rec_limit=REC_LIMIT,
         hybrid_r=HYBRID_R,
-        memory=MEMORY
+        max_clusters=MAX_CLUSTERS
     )
 
     # 5. Initialize Solver

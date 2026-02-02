@@ -112,7 +112,7 @@ def mars_chebyshev1_triggers():
 COM_MODE = mars_right_band_triggers()
 
 # --- Core Algorithm ---
-ALGORITHM = "exact"             # "exact" or "approximate" (enables TI approximations)
+ALGORITHM = "approximate"             # "exact" or "approximate" (enables TI approximations)
 
 # --- Heuristic Type ---
 # Controls upper-bound heuristic for A* search guidance.
@@ -133,9 +133,9 @@ IE_MIN2 = 3                     # Min depth of information-sharing stages for de
 # --- Approximation Techniques (TI Flags) ---
 # Enable these for faster but approximate solutions. Requires ALGORITHM = "approximate".
 TI1 = False  # Interleaving Planning/Execution: prune branches via consensus voting
-TI2 = False  # Progress-based Pruning: limit per-entity exploration budget
-TI3 = False  # Tail Approximation: use heuristics for final REC_LIMIT stages
-TI4 = False  # Memory-Bounded Clustering: merge clusters with same recent observations
+TI2 = True  # Progress-based Pruning: limit per-entity exploration budget
+TI3 = True  # Tail Approximation: use heuristics for final REC_LIMIT stages
+TI4 = True  # Max Clustering: cluster based on L1 distance between beliefs, weighted by probability mass
 
 # --- TI1: Interleaving Parameters ---
 # Consensus voting among top nodes to detect centralized stages early.
@@ -153,9 +153,9 @@ ITER_LIMIT = 1000
 REC_LIMIT = 2
 TAIL_HEURISTIC_TYPE = "HYBRID"
 
-# --- TI4: Finite Memory Clustering ---
-# Clusters with identical last MEMORY observations are merged.
-MEMORY = 2
+# --- TI4: Max Clustering ---
+# Cluster into MAX_Clusters based on combination of L1 distance between resulting beliefs and probability mass
+MAX_CLUSTERS = 6
 
 # ============================================================================
 #                        END USER CONFIGURATION
@@ -366,7 +366,7 @@ def run_mars_interleaved(config):
         heuristic_type=HEURISTIC_TYPE,
         tail_heuristic_type=TAIL_HEURISTIC_TYPE,
         hybrid_r=HYBRID_R,
-        memory=MEMORY
+        max_clusters=MAX_CLUSTERS
     )
 
     # 4. Initialize Solver
@@ -375,7 +375,7 @@ def run_mars_interleaved(config):
     print(f"Algorithm hyperparameters: algorithm: {sdec_pomdp.algorithm}, TI1: {sdec_pomdp.TI1}, TI2: {sdec_pomdp.TI2}, TI3: {sdec_pomdp.TI3}, TI4: {sdec_pomdp.TI4}, "
           f"iter_limit: {sdec_pomdp.iter_limit}, rec_limit: {sdec_pomdp.rec_limit}, "
           f"heuristic_type: {sdec_pomdp.heuristic_type}, tail_heuristic_type: {sdec_pomdp.tail_heuristic_type}, "
-          f"maxit: {sdec_pomdp.maxit}, ie_min2: {sdec_pomdp.IEmin2}, memory: {sdec_pomdp.memory}, ")
+          f"maxit: {sdec_pomdp.maxit}, ie_min2: {sdec_pomdp.IEmin2}, max_clusters: {sdec_pomdp.max_clusters}, ")
 
     # 3. Initialize Simulation State
     true_state = 0
